@@ -1,0 +1,49 @@
+# Tool settings only: this repository is not an installable package. Dependencies live in
+# requirements.txt (dev/CI) and infra/event-hub/requirements.txt (image), installed from their
+# hash-pinned requirements.lock files (see README).
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "infra/tests/integrations/event_hub_test.py"]
+addopts = "-ra"
+
+[tool.coverage.run]
+# The hub service this repository owns; the data lake and store clients are vendored copies.
+source = ["infra/scripts/services", "infra/scripts/cli"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["infra", "tests"]
+# The scripts import each other through sys.path inserts; mirror them so mypy resolves them.
+mypy_path = "infra/scripts:infra/scripts/utils:infra/scripts/services:infra/tests/support"
+explicit_package_bases = true
+# Not checked here: the vendored copies (store clients, data lake) and the SQLite test doubles.
+# They are maintained in solo-empire / data-lake (see ruff.toml and README); their types are
+# still read (follow_imports = "silent") so the hub's calls into them are checked.
+exclude = ["^infra/scripts/utils/", "^infra/scripts/data_lake/", "^infra/tests/support/"]
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+# Service code: mypy --strict (the global-only strict flags are set above). The tests and the
+# intake CLI stay gradual: unannotated functions are checked only at their call sites.
+[[tool.mypy.overrides]]
+module = ["event_hub", "event_hub_transport", "_sentry"]
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+no_implicit_reexport = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+module = ["_env", "cell_store", "task_store", "recurring_step", "data_lake.*", "sqlite_cell_store"]
+follow_imports = "silent"
+
+# pyarrow ships neither inline types nor a py.typed marker.
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true

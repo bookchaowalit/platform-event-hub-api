@@ -399,28 +399,27 @@ def _ingest_payload(
             "checkpoint_existed": checkpoint is not None,
             "iceberg": None,
         }
+    if checkpoint is not None:
+        received_at = str(checkpoint["received_at"])
+        run_id = str(checkpoint["run_id"])
+        raw_key = str(checkpoint["raw_key"])
+        bronze_key = str(checkpoint["bronze_key"])
     else:
-        if checkpoint is not None:
-            received_at = str(checkpoint["received_at"])
-            run_id = str(checkpoint["run_id"])
-            raw_key = str(checkpoint["raw_key"])
-            bronze_key = str(checkpoint["bronze_key"])
-        else:
-            received_at = utc_now()
-            received_date = received_at[:10]
-            run_id = f"{received_date}-{batch_id}"
-            # Optional multi-provider partition keeps raw bytes separated before merge.
-            provider_part = ""
-            if isinstance(metadata, dict) and metadata.get("provider"):
-                try:
-                    provider_part = f"/provider={slug(str(metadata['provider']))}"
-                except ValueError:
-                    provider_part = ""
-            raw_key = f"landing/source={source}{provider_part}/batch_id={batch_id}/payload.{extension}"
-            bronze_key = (
-                f"bronze/domain={domain}/dataset={dataset}/schema_version={schema_version}/"
-                f"ingest_date={received_date}/source={source}/part-{batch_id}.parquet"
-            )
+        received_at = utc_now()
+        received_date = received_at[:10]
+        run_id = f"{received_date}-{batch_id}"
+        # Optional multi-provider partition keeps raw bytes separated before merge.
+        provider_part = ""
+        if isinstance(metadata, dict) and metadata.get("provider"):
+            try:
+                provider_part = f"/provider={slug(str(metadata['provider']))}"
+            except ValueError:
+                provider_part = ""
+        raw_key = f"landing/source={source}{provider_part}/batch_id={batch_id}/payload.{extension}"
+        bronze_key = (
+            f"bronze/domain={domain}/dataset={dataset}/schema_version={schema_version}/"
+            f"ingest_date={received_date}/source={source}/part-{batch_id}.parquet"
+        )
 
     if checkpoint is not None:
         if checkpoint.get("input_format") != extension:

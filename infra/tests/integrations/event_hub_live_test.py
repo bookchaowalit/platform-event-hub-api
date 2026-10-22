@@ -17,8 +17,8 @@ from urllib.error import HTTPError, URLError
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "infra/scripts/services"))
-import event_hub as e
-from event_hub_transport import read_secrets, mqtt_client
+import event_hub as e  # noqa: E402 - after the services directory is on sys.path
+from event_hub_transport import read_secrets, mqtt_client  # noqa: E402 - same
 
 
 def main():
@@ -113,7 +113,7 @@ def main():
             )
         except HTTPError as exc:
             with exc:
-                assert exc.code == 401
+                assert exc.code == 401  # noqa: PT017 - a script run by hand against the pilot, not under pytest
         else:
             raise AssertionError("http_auth_bypass")
         restart = "--restart" in sys.argv

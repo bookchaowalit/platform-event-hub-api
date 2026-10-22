@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 infra/event-hub/.runtime/
+.venv/
+.pytest_cache/
+.coverage
+.coverage.*

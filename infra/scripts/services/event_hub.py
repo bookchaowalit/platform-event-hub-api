@@ -22,14 +22,19 @@ from typing import Any
 INFRA = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(INFRA / "scripts"))
 sys.path.insert(0, str(INFRA / "scripts" / "utils"))
-from cell_store import open_cell_store
-from data_lake.ingest import canonical_json, ingest_payload, utc_now
-from data_lake.storage import ObjectStore
+from cell_store import open_cell_store  # noqa: E402 - after the sys.path setup above
+from data_lake.ingest import canonical_json, ingest_payload, utc_now  # noqa: E402 - same
+from data_lake.storage import ObjectStore  # noqa: E402 - same
+
+from _sentry import capture, init_sentry  # noqa: E402 - same
 
 spec = importlib.util.spec_from_file_location(
     "event_hub_intake", INFRA / "scripts/cli/data-intake-cli.py"
 )
-intake = importlib.util.module_from_spec(spec)
+if spec is None or spec.loader is None:
+    raise ImportError("data-intake-cli.py could not be loaded")
+# Any: the CLI is loaded from a file path, so mypy cannot see its functions.
+intake: Any = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(intake)
 # This private module instance uses the existing command implementations without
 # emitting their CLI output (or redirecting process-wide stdout in HTTP threads).
@@ -80,9 +85,9 @@ def finite(value: Any) -> bool:
         return False
 
 
-def json_object(raw: bytes) -> dict:
-    def pairs(items):
-        obj = {}
+def json_object(raw: bytes) -> dict[str, Any]:
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        obj: dict[str, Any] = {}
         for key, value in items:
             if key in obj:
                 raise Rejected("duplicate_json_key")
@@ -91,6 +96,8 @@ def json_object(raw: bytes) -> dict:
 
     try:
         value = json.loads(raw, object_pairs_hook=pairs)
+    except Rejected:
+        raise  # duplicate_json_key from the hook keeps its own code (Rejected is a ValueError)
     except (ValueError, UnicodeDecodeError, RecursionError) as exc:
         raise Rejected("invalid_json") from exc
     if not isinstance(value, dict):
@@ -98,7 +105,7 @@ def json_object(raw: bytes) -> dict:
     return value
 
 
-def load_config(path: Path) -> dict:
+def load_config(path: Path) -> dict[str, Any]:
     cfg = json_object(path.read_bytes())
     if (
         set(cfg) != {"schema_version", "sources", "rules"}
@@ -166,7 +173,9 @@ def load_config(path: Path) -> dict:
     return cfg
 
 
-def validate(raw: bytes, source: str, transport: str, cfg: dict) -> dict:
+def validate(
+    raw: bytes, source: str, transport: str, cfg: dict[str, Any]
+) -> dict[str, Any]:
     if not 0 < len(raw) <= MAX_BYTES:
         raise Rejected("payload_size")
     policy = cfg["sources"].get(source)
@@ -246,8 +255,8 @@ class Hub:
         self,
         runtime: Path = DEFAULT_RUNTIME,
         config: Path = DEFAULT_CONFIG,
-        intake_store=None,
-    ):
+        intake_store: Any = None,  # an Intake cell store (CellStore or its SQLite test double)
+    ) -> None:
         self.runtime = runtime.resolve()
         self.runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.config_path = (
@@ -294,7 +303,7 @@ class Hub:
         args = intake.build_parser().parse_args(argv)
         getattr(intake, "cmd_" + name)(args, self.intake_store)
 
-    def sync_sources(self) -> dict:
+    def sync_sources(self) -> dict[str, Any]:
         cfg = load_config(self.config_path)
         # Only the hub's own sources (dataset hub_events): the Intake cell also holds other systems' sources
         # (finance files, diary files, LINE), which the hub must never pause.
@@ -338,7 +347,7 @@ class Hub:
                 self.call("source_set_status", ["source", "set-status", key, status])
         return cfg
 
-    def reject(self, raw: bytes, code: str) -> dict:
+    def reject(self, raw: bytes, code: str) -> dict[str, Any]:
         # Invalid payloads may contain secrets. Quarantine only digest/reason;
         # the producer retains the rejected bytes for correction/resubmission.
         with self.lock, self.conn:
@@ -349,7 +358,7 @@ class Hub:
             )
         return {"status": "rejected", "code": code}
 
-    def receive(self, raw: bytes, source: str, transport: str) -> dict:
+    def receive(self, raw: bytes, source: str, transport: str) -> dict[str, Any]:
         with self.lock:
             cfg = self.sync_sources()
             try:
@@ -413,7 +422,7 @@ class Hub:
                 }
             return self.process(identity)
 
-    def process(self, identity: str) -> dict:
+    def process(self, identity: str) -> dict[str, Any]:
         with self.lock:
             row = self.conn.execute(
                 "SELECT * FROM hub_receipts WHERE identity=?", (identity,)
@@ -556,6 +565,10 @@ class Hub:
                 }
             except Exception as exc:
                 self.conn.rollback()
+                if not isinstance(
+                    exc, Rejected
+                ):  # Rejected codes are expected outcomes
+                    capture(exc)  # no-op unless SENTRY_DSN is set
                 code = str(exc) if isinstance(exc, Rejected) else type(exc).__name__
                 with self.conn:
                     self.conn.execute(
@@ -569,7 +582,9 @@ class Hub:
                     "retry_exhausted": row["attempt_count"] + 1 >= 5,
                 }
 
-    def evaluate(self, receipt, obj: dict, cfg: dict) -> int:
+    def evaluate(
+        self, receipt: sqlite3.Row, obj: dict[str, Any], cfg: dict[str, Any]
+    ) -> int:
         """Consume verified Bronze, atomically record decisions/actions/cooldown."""
         count = 0
         when = timestamp(obj["occurred_at"])
@@ -642,7 +657,9 @@ class Hub:
             )
         return count
 
-    def retry(self, limit: int = 100, *, automatic=False) -> list[dict]:
+    def retry(
+        self, limit: int = 100, *, automatic: bool = False
+    ) -> list[dict[str, Any]]:
         if not 1 <= limit <= 100:
             raise Rejected("invalid_limit")
         with self.lock:
@@ -656,7 +673,7 @@ class Hub:
             ).fetchall()
             return [self.process(r["identity"]) for r in rows]
 
-    def snapshot(self) -> dict:
+    def snapshot(self) -> dict[str, Any]:
         with self.lock:
             cfg = load_config(self.config_path)
             counts = {
@@ -715,12 +732,14 @@ class Hub:
                 "rejections": rejections,
             }
 
-    def close(self):
+    def close(self) -> None:
         self.conn.close()
         self._file_lock.close()
 
 
-def fixture(source="sensor-demo", value=38, event_id=None) -> dict:
+def fixture(
+    source: str = "sensor-demo", value: float = 38, event_id: str | None = None
+) -> dict[str, Any]:
     import uuid
 
     return {
@@ -733,7 +752,8 @@ def fixture(source="sensor-demo", value=38, event_id=None) -> dict:
     }
 
 
-def main():
+def main() -> None:
+    init_sentry()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
@@ -755,8 +775,10 @@ def main():
     if args.command in {"serve", "setup", "simulate", "onboard"}:
         from event_hub_transport import run
 
-        return run(args)
+        run(args)
+        return
     hub = Hub(args.runtime, args.config)
+    result: Any  # a dict for demo and status, a list of receipts for retry
     try:
         if args.command == "demo":
             obj = fixture()

@@ -227,8 +227,9 @@ class SqliteCellStore:
             values = [int(v) if isinstance(v, bool) else v for v in values]
             where.append(f"{column} IN ({','.join('?' * len(values))})")
             params += values
-        for name in [nulls] if isinstance(nulls, str) else nulls:
-            where.append(f"{name} IS NULL")
+        where.extend(
+            f"{name} IS NULL" for name in ([nulls] if isinstance(nulls, str) else nulls)
+        )
         direction = "DESC" if order == "desc" else "ASC"
         sort = (
             f"{order_column} {direction}, {key} {direction}"

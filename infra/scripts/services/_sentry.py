@@ -1,0 +1,118 @@
+"""Error reporting to Sentry.
+
+A no-op unless SENTRY_DSN is set, so tests and local runs never send anything. ``event_hub.main``
+calls ``init_sentry`` for every command (including ``serve``); ``capture`` reports the unexpected
+errors the hub turns into failure codes (a failed receipt, a 503 from the HTTP transport).
+
+Nothing sensitive leaves the process: no stack-frame local variables (they hold source tokens and
+payload bytes), no request bodies, headers, cookies or query strings, and every message is
+scrubbed of URL passwords, bearer tokens and JWTs before it is sent.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import sys
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from sentry_sdk.types import Event, Hint
+
+# scheme://user:password@host -> scheme://user:***@host
+_URL_PASSWORD = re.compile(
+    r"(?P<head>[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+:)[^\s@]+(?=@)"
+)
+# key=value / key: value secrets in libpq-style conninfo strings and similar
+_KV_SECRET = re.compile(
+    r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key)(\s*[=:]\s*)\S+"
+)
+_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*")
+
+
+def scrub(text: str) -> str:
+    text = _URL_PASSWORD.sub(r"\g<head>***", text)
+    text = _KV_SECRET.sub(r"\1\2***", text)
+    text = _BEARER.sub("Bearer ***", text)
+    return _JWT.sub("***jwt***", text)
+
+
+def _scrub_event(event: Event, _hint: Hint) -> Event:
+    # Scrubbed in place as a plain dict: the Event TypedDict is too strict for these edits.
+    data = cast("dict[str, Any]", event)
+    for exc in (data.get("exception") or {}).get("values") or []:
+        if isinstance(exc.get("value"), str):
+            exc["value"] = scrub(exc["value"])
+    if isinstance(data.get("message"), str):
+        data["message"] = scrub(data["message"])
+    logentry = data.get("logentry")
+    if isinstance(logentry, dict):
+        # Logging events carry the template, the raw params and the formatted text; keep only
+        # the scrubbed formatted text (a param like a token is no longer next to "Bearer").
+        formatted = logentry.get("formatted") or logentry.get("message")
+        data["logentry"] = {"message": scrub(str(formatted))} if formatted else {}
+    request = data.get("request")
+    if isinstance(request, dict):
+        # Keep only the method. URLs can carry personal data (source ids, query strings).
+        data["request"] = {"method": request["method"]} if "method" in request else {}
+    for crumb in (data.get("breadcrumbs") or {}).get("values") or []:
+        if isinstance(crumb.get("message"), str):
+            crumb["message"] = scrub(crumb["message"])
+        crumb.pop("data", None)
+    data.pop("extra", None)
+    # Incoming baggage headers end up here and in the envelope's trace header (user ids,
+    # transaction names); errors don't need them.
+    trace = (data.get("contexts") or {}).get("trace")
+    if isinstance(trace, dict):
+        trace.pop("dynamic_sampling_context", None)
+    return event
+
+
+def init_sentry() -> None:
+    dsn = os.environ.get("SENTRY_DSN", "").strip()
+    if not dsn:
+        return
+    import sentry_sdk
+    from sentry_sdk.integrations.logging import LoggingIntegration
+
+    sentry_sdk.init(
+        dsn=dsn,
+        environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+        release=os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or os.environ.get("SENTRY_RELEASE")
+        or None,
+        # None (not 0.0) disables tracing completely: with 0.0 an incoming sentry-trace header
+        # can still force a sampled transaction that carries the URL, query and headers.
+        traces_sample_rate=None,
+        send_default_pii=False,
+        include_local_variables=False,  # frame locals hold source tokens and payload bytes
+        max_request_body_size="never",
+        before_send=_scrub_event,
+        # Log records are neither events nor breadcrumbs: free-form log text can carry secrets
+        # that no pattern can recognise. Unhandled exceptions (excepthook) and capture() still
+        # report.
+        integrations=[
+            LoggingIntegration(level=None, event_level=None, sentry_logs_level=None)
+        ],
+    )
+    service = os.environ.get("RAILWAY_SERVICE_NAME", "").strip()
+    if service:
+        sentry_sdk.set_tag("service", service)
+    # stderr, never stdout: the CLI commands print their JSON result on stdout.
+    print(
+        f"sentry: enabled for {service or 'unknown service'}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def capture(exc: BaseException) -> None:
+    """Report an exception the hub catches and turns into a failure code."""
+    if not os.environ.get("SENTRY_DSN", "").strip():
+        return
+    import sentry_sdk
+
+    # No flush here: callers can hold the hub lock, and the SDK's background worker sends the
+    # event (its atexit hook flushes on exit for the one-shot commands).
+    sentry_sdk.capture_exception(exc)

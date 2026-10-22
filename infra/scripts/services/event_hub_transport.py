@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
 import os
@@ -13,25 +14,34 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from http.cookies import SimpleCookie
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 from urllib.request import Request, urlopen
 
+from _sentry import capture
 from event_hub import (
     DEFAULT_CONFIG,
     INFRA,
     MAX_BYTES,
     Hub,
     Rejected,
-    canonical_json,
     fixture,
     load_config,
 )
+from data_lake.ingest import canonical_json  # on sys.path once event_hub is imported
+
+if TYPE_CHECKING:
+    import argparse
+
+    from paho.mqtt.client import Client, ConnectFlags, DisconnectFlags, MQTTMessage
+    from paho.mqtt.properties import Properties
+    from paho.mqtt.reasoncodes import ReasonCode
 
 
-def read_secrets(runtime: Path) -> dict:
+def read_secrets(runtime: Path) -> dict[str, Any]:
     path = runtime / "secrets.json"
     if path.stat().st_mode & 0o077:
         raise RuntimeError("secret_file_permissions")
-    values = json.loads(path.read_text())
+    values: dict[str, Any] = json.loads(path.read_text())
     if set(values) != {"mqtt", "http", "operator"}:
         raise RuntimeError("invalid_secret_file")
     if (
@@ -43,7 +53,7 @@ def read_secrets(runtime: Path) -> dict:
     return values
 
 
-def write_private_json(path: Path, value: dict) -> None:
+def write_private_json(path: Path, value: dict[str, Any]) -> None:
     """Atomically write a runtime file with no group/other permissions."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.with_name("." + path.name + ".tmp")
@@ -59,7 +69,7 @@ def write_private_json(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def write_acl(runtime: Path, values: dict) -> Path:
+def write_acl(runtime: Path, values: dict[str, Any]) -> Path:
     """Render the scoped MQTT ACL from the source registry."""
     auth = runtime / "auth"
     auth.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -83,7 +93,7 @@ def write_acl(runtime: Path, values: dict) -> Path:
     return path
 
 
-def _password_stage(runtime: Path, values: dict) -> Path:
+def _password_stage(runtime: Path, values: dict[str, Any]) -> Path:
     auth = runtime / "auth"
     auth.mkdir(mode=0o700, parents=True, exist_ok=True)
     stage = auth / ".passwords.tmp"
@@ -123,7 +133,7 @@ def _password_stage(runtime: Path, values: dict) -> Path:
     return stage
 
 
-def write_password_file(runtime: Path, values: dict) -> Path:
+def write_password_file(runtime: Path, values: dict[str, Any]) -> Path:
     stage = _password_stage(runtime, values)
     destination = runtime / "auth/passwords"
     stage.replace(destination)
@@ -131,7 +141,7 @@ def write_password_file(runtime: Path, values: dict) -> Path:
     return destination
 
 
-def setup(runtime: Path, config: Path) -> dict:
+def setup(runtime: Path, config: Path) -> dict[str, Any]:
     runtime = runtime.resolve()
     runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
     load_config(config)
@@ -171,7 +181,7 @@ def onboard(
     event_type: str,
     device_host: str,
     device_port: int,
-) -> dict:
+) -> dict[str, Any]:
     """Create one scoped MQTT identity and a private device connection profile."""
     setup(runtime, config)
     runtime = runtime.resolve()
@@ -240,7 +250,9 @@ def onboard(
     }
 
 
-def mqtt_client(values: dict, username: str, *, client_id: str, durable=False):
+def mqtt_client(
+    values: dict[str, Any], username: str, *, client_id: str, durable: bool = False
+) -> Client:
     import paho.mqtt.client as mqtt
 
     client = mqtt.Client(
@@ -256,13 +268,15 @@ def mqtt_client(values: dict, username: str, *, client_id: str, durable=False):
 
 
 class MQTTWorker:
-    def __init__(self, hub: Hub, values: dict, port: int, host="127.0.0.1"):
+    def __init__(
+        self, hub: Hub, values: dict[str, Any], port: int, host: str = "127.0.0.1"
+    ) -> None:
         self.hub = hub
         self.port = port
         self.host = host
         self.ready = threading.Event()
         self.stop_event = threading.Event()
-        self.last_error = None
+        self.last_error: str | None = None
         self.client = mqtt_client(
             values, "event-hub", client_id="se-event-hub-worker-v1", durable=True
         )
@@ -272,23 +286,44 @@ class MQTTWorker:
         self.client.on_message = self.on_message
         self.thread = threading.Thread(target=self.loop, daemon=True)
 
-    def on_connect(self, client, userdata, flags, reason_code, properties):
+    def on_connect(
+        self,
+        client: Client,
+        userdata: Any,
+        flags: ConnectFlags,
+        reason_code: ReasonCode,
+        properties: Properties | None,
+    ) -> None:
         if reason_code.is_failure:
             self.last_error = "mqtt_auth_failed"
         else:
             client.subscribe("se/events/+", qos=1)
 
-    def on_subscribe(self, client, userdata, mid, reasons, properties):
+    def on_subscribe(
+        self,
+        client: Client,
+        userdata: Any,
+        mid: int,
+        reasons: list[ReasonCode],
+        properties: Properties | None,
+    ) -> None:
         if reasons and all(not reason.is_failure for reason in reasons):
             self.ready.set()
             self.last_error = None
         else:
             self.last_error = "mqtt_subscription_failed"
 
-    def on_disconnect(self, client, userdata, flags, reason, properties):
+    def on_disconnect(
+        self,
+        client: Client,
+        userdata: Any,
+        flags: DisconnectFlags,
+        reason: ReasonCode,
+        properties: Properties | None,
+    ) -> None:
         self.ready.clear()
 
-    def on_message(self, client, userdata, message):
+    def on_message(self, client: Client, userdata: Any, message: MQTTMessage) -> None:
         try:
             source = message.topic.removeprefix("se/events/")
             if message.qos != 1 or message.retain:
@@ -304,11 +339,12 @@ class MQTTWorker:
             else:
                 self.last_error = "mqtt_processing_failed"
                 client.disconnect()  # Preserve unacked QoS 1 for redelivery.
-        except Exception:
+        except Exception as exc:
+            capture(exc)  # no-op unless SENTRY_DSN is set
             self.last_error = "mqtt_processing_failed"
             client.disconnect()
 
-    def loop(self):
+    def loop(self) -> None:
         while not self.stop_event.is_set():
             try:
                 self.client.connect(self.host, self.port, keepalive=30)
@@ -318,27 +354,31 @@ class MQTTWorker:
             self.ready.clear()
             self.stop_event.wait(3)
 
-    def start(self):
+    def start(self) -> None:
         self.thread.start()
 
-    def close(self):
+    def close(self) -> None:
         self.stop_event.set()
         self.client.disconnect()
         self.thread.join(timeout=35)
 
 
-def handler_for(hub: Hub, values: dict, mqtt_worker=None):
+def handler_for(
+    hub: Hub, values: dict[str, Any], mqtt_worker: MQTTWorker | None = None
+) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "EventHub/1"
 
-        def setup(self):
+        def setup(self) -> None:
             super().setup()
             self.connection.settimeout(5)
 
-        def log_message(self, *_args):
+        def log_message(self, *_args: Any) -> None:
             pass
 
-        def respond(self, code, payload, cookie=None):
+        def respond(
+            self, code: int, payload: dict[str, Any], cookie: str | None = None
+        ) -> None:
             raw = canonical_json(payload).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -350,11 +390,11 @@ def handler_for(hub: Hub, values: dict, mqtt_worker=None):
             self.end_headers()
             self.wfile.write(raw)
 
-        def bearer(self):
+        def bearer(self) -> str:
             header = self.headers.get("Authorization", "")
             return header[7:] if header.startswith("Bearer ") else ""
 
-        def operator(self):
+        def operator(self) -> bool:
             candidate = self.bearer()
             if not candidate:
                 cookie = SimpleCookie()
@@ -367,17 +407,15 @@ def handler_for(hub: Hub, values: dict, mqtt_worker=None):
                     return False
             return hmac.compare_digest(candidate, values["operator"])
 
-        def local_origin(self):
-            expected = {
-                f"127.0.0.1:{self.server.server_port}",
-                f"localhost:{self.server.server_port}",
-            }
+        def local_origin(self) -> bool:
+            port = cast("HTTPServer", self.server).server_port
+            expected = {f"127.0.0.1:{port}", f"localhost:{port}"}
             return self.headers.get("Host") in expected and (
                 not self.headers.get("Origin")
                 or self.headers["Origin"] in {"http://" + x for x in expected}
             )
 
-        def body(self, maximum=MAX_BYTES):
+        def body(self, maximum: int = MAX_BYTES) -> bytes:
             if (
                 self.headers.get("Transfer-Encoding")
                 or len(self.headers.get_all("Content-Length", [])) != 1
@@ -396,13 +434,14 @@ def handler_for(hub: Hub, values: dict, mqtt_worker=None):
                 raise Rejected("incomplete_body")
             return raw
 
-        def do_GET(self):
+        def do_GET(self) -> None:
             try:
                 return self.get_response()
-            except Exception:
+            except Exception as exc:
+                capture(exc)  # no-op unless SENTRY_DSN is set
                 return self.respond(503, {"code": "status_unavailable"})
 
-        def get_response(self):
+        def get_response(self) -> None:
             if not self.local_origin():
                 return self.respond(403, {"code": "origin_not_allowed"})
             if self.path == "/":
@@ -416,7 +455,8 @@ def handler_for(hub: Hub, values: dict, mqtt_worker=None):
                     "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
                 )
                 self.end_headers()
-                return self.wfile.write(raw)
+                self.wfile.write(raw)
+                return None
             if self.path == "/health":
                 healthy = mqtt_worker is None or (
                     mqtt_worker.ready.is_set() and not mqtt_worker.last_error
@@ -436,7 +476,7 @@ def handler_for(hub: Hub, values: dict, mqtt_worker=None):
                 return self.respond(200, state)
             return self.respond(404, {"code": "not_found"})
 
-        def do_POST(self):
+        def do_POST(self) -> None:
             try:
                 if not self.local_origin():
                     return self.respond(403, {"code": "origin_not_allowed"})
@@ -486,7 +526,8 @@ def handler_for(hub: Hub, values: dict, mqtt_worker=None):
                 return self.respond(404, {"code": "not_found"})
             except Rejected as exc:
                 self.respond(400, {"code": str(exc)})
-            except Exception:
+            except Exception as exc:
+                capture(exc)  # no-op unless SENTRY_DSN is set
                 self.respond(503, {"code": "processing_unavailable"})
 
     return Handler
@@ -494,7 +535,7 @@ def handler_for(hub: Hub, values: dict, mqtt_worker=None):
 
 def simulate(
     runtime: Path, transport: str, port: int, mqtt_port: int, value: float
-) -> dict:
+) -> dict[str, Any]:
     values = read_secrets(runtime)
     source = "sensor-demo" if transport == "mqtt" else "app-demo"
     obj = fixture(source, value)
@@ -509,7 +550,8 @@ def simulate(
             },
         )
         with urlopen(request, timeout=15) as response:
-            return json.load(response)
+            answer: dict[str, Any] = json.load(response)
+            return answer
     client = mqtt_client(values, source, client_id="sim-" + secrets.token_hex(8))
     client.connect("127.0.0.1", mqtt_port, keepalive=30)
     client.loop_start()
@@ -524,7 +566,7 @@ def simulate(
         client.loop_stop()
 
 
-def run(args):
+def run(args: argparse.Namespace) -> None:
     if args.command == "setup":
         result = setup(args.runtime, args.config)
     elif args.command == "simulate":
@@ -554,13 +596,12 @@ def run(args):
         class Server(HTTPServer):
             last_retry = 0.0
 
-            def service_actions(self):
+            def service_actions(self) -> None:
                 if time.monotonic() - self.last_retry >= 15:
                     self.last_retry = time.monotonic()
-                    try:
+                    # Receipts retain failure codes for the status API.
+                    with contextlib.suppress(Exception):
                         hub.retry(limit=10, automatic=True)
-                    except Exception:
-                        pass  # Receipts retain failure codes for the status API.
 
         server = Server((args.bind, args.port), handler_for(hub, values, worker))
         worker.start()

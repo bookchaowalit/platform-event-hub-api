@@ -1,6 +1,6 @@
 **
 !event-hub/
-!event-hub/requirements.txt
+!event-hub/requirements.lock
 !event-hub/config.json
 !event-hub/index.html
 !scripts/
@@ -8,11 +8,15 @@
 !scripts/data_lake/*.py
 !scripts/utils/
 !scripts/utils/_env.py
+!scripts/utils/cell_store.py
+!scripts/utils/task_store.py
+!scripts/utils/recurring_step.py
 !scripts/cli/
 !scripts/cli/data-intake-cli.py
 !scripts/services/
 !scripts/services/event_hub.py
 !scripts/services/event_hub_transport.py
+!scripts/services/_sentry.py
 !database/
 !database/migrations/
 !database/migrations/033_source_registry_intake_queue.sql

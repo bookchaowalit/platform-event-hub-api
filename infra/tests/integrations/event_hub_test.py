@@ -14,13 +14,15 @@ from unittest.mock import patch
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "infra/scripts/services"))
 sys.path.insert(0, str(ROOT / "infra/tests/support"))
-import sqlite_cell_store  # the Intake cell double (also isolates the cell API client switches)
-import event_hub as e
-import event_hub_transport as transport
-from data_lake.storage import ObjectStore, StorageError
+import sqlite_cell_store  # noqa: E402 - the Intake cell double (also isolates the cell API client switches)
+import event_hub as e  # noqa: E402 - after the sys.path setup above
+import event_hub_transport as transport  # noqa: E402 - same
+from data_lake.storage import ObjectStore, StorageError  # noqa: E402 - same
 
 
 class HubTests(unittest.TestCase):
@@ -72,28 +74,28 @@ class HubTests(unittest.TestCase):
         obj = self.event()
         raw = json.dumps(obj, indent=3).encode() + b"\n"
         result = self.hub.receive(raw, "sensor-demo", "mqtt")
-        self.assertEqual(result["status"], "complete", result)
-        self.assertEqual(result["notifications"], 1)
+        assert result["status"] == "complete", result
+        assert result["notifications"] == 1
         row = e.intake.intake_by_identifier(
             self.hub.intake_store, "hub-" + result["identity"]
         )
-        self.assertEqual(row["status"], "verified")
+        assert row["status"] == "verified"
         e.intake.verify_manifest(row, self.hub.lake_uri)
-        self.assertEqual(self.hub.store.get_bytes(row["lake_raw_object_key"]), raw)
-        self.assertEqual(self.count("hub_notifications"), 1)
+        assert self.hub.store.get_bytes(row["lake_raw_object_key"]) == raw
+        assert self.count("hub_notifications") == 1
 
     def test_duplicate_whitespace_and_conflicting_identity(self):
         obj = self.event()
-        self.assertEqual(self.send(obj)["status"], "complete")
-        self.assertEqual(
+        assert self.send(obj)["status"] == "complete"
+        assert (
             self.hub.receive(json.dumps(obj, indent=2).encode(), "sensor-demo", "mqtt")[
                 "status"
-            ],
-            "duplicate",
+            ]
+            == "duplicate"
         )
         obj["payload"]["value"] = 50
-        self.assertEqual(self.send(obj)["code"], "event_id_conflict")
-        self.assertEqual(self.count("hub_notifications"), 1)
+        assert self.send(obj)["code"] == "event_id_conflict"
+        assert self.count("hub_notifications") == 1
 
     def test_normal_threshold_cooldown_and_late_order(self):
         self.send(self.event(35, "normal", -1200))
@@ -101,16 +103,14 @@ class HubTests(unittest.TestCase):
         self.send(self.event(40, "cooldown", -1050))
         self.send(self.event(40, "late", -1150))
         self.send(self.event(40, "new-alert", -400))
-        self.assertEqual(self.count("hub_notifications"), 2)
+        assert self.count("hub_notifications") == 2
         outcomes = [
             r[0]
             for r in self.hub.conn.execute(
                 "SELECT outcome FROM hub_decisions ORDER BY rowid"
             )
         ]
-        self.assertEqual(
-            outcomes, ["not_matched", "notified", "cooldown", "late", "notified"]
-        )
+        assert outcomes == ["not_matched", "notified", "cooldown", "late", "notified"]
 
     def test_stale_future_and_unit_mismatch_cannot_poison_watermark(self):
         self.send(self.event(event_id="future", seconds=1000))
@@ -118,29 +118,25 @@ class HubTests(unittest.TestCase):
         wrong = self.event(event_id="wrong-unit")
         wrong["payload"]["unit"] = "watts"
         self.send(wrong)
-        self.assertEqual(self.send(self.event())["notifications"], 1)
+        assert self.send(self.event())["notifications"] == 1
 
     def test_source_scoping_and_disabled_policy(self):
         raw = e.canonical_json(self.event(source="app-demo")).encode()
-        self.assertEqual(
-            self.hub.receive(raw, "sensor-demo", "mqtt")["code"],
-            "invalid_event_identity",
+        assert (
+            self.hub.receive(raw, "sensor-demo", "mqtt")["code"]
+            == "invalid_event_identity"
         )
-        self.assertEqual(
-            self.hub.receive(raw, "app-demo", "mqtt")["code"], "source_not_allowed"
-        )
+        assert self.hub.receive(raw, "app-demo", "mqtt")["code"] == "source_not_allowed"
         self.change(lambda c: c["sources"]["sensor-demo"].update(enabled=False))
-        self.assertEqual(self.send(self.event())["code"], "source_not_allowed")
-        self.assertEqual(self.count("hub_receipts"), 0)
+        assert self.send(self.event())["code"] == "source_not_allowed"
+        assert self.count("hub_receipts") == 0
 
     def test_removed_source_is_paused_in_existing_registry(self):
         self.change(lambda c: c["sources"].pop("sensor-demo"))
         self.hub.sync_sources()
-        self.assertEqual(
-            self.hub.intake_store.list("sources", source_key="sensor-demo")[0][
-                "status"
-            ],
-            "paused",
+        assert (
+            self.hub.intake_store.list("sources", source_key="sensor-demo")[0]["status"]
+            == "paused"
         )
 
     def test_untrusted_shapes_rejected_without_raw_storage(self):
@@ -159,27 +155,27 @@ class HubTests(unittest.TestCase):
         bad.append(json.dumps(obj).encode())
         for raw in bad:
             with self.subTest(raw_length=len(raw)):
-                self.assertEqual(
-                    self.hub.receive(raw, "sensor-demo", "mqtt")["status"], "rejected"
+                assert (
+                    self.hub.receive(raw, "sensor-demo", "mqtt")["status"] == "rejected"
                 )
-        self.assertEqual(self.count("hub_receipts"), 0)
-        self.assertEqual(self.hub.store.list_keys("landing"), [])
-        self.assertNotIn("synthetic-sensitive-value", str(self.hub.snapshot()))
+        assert self.count("hub_receipts") == 0
+        assert self.hub.store.list_keys("landing") == []
+        assert "synthetic-sensitive-value" not in str(self.hub.snapshot())
 
     def test_lake_failure_blocks_actions_then_restart_recovers(self):
         with patch.object(
             e, "ingest_payload", side_effect=StorageError("private details")
         ):
             result = self.send(self.event())
-        self.assertEqual(result["status"], "failed")
-        self.assertNotIn("private details", str(self.hub.snapshot()))
-        self.assertEqual(self.count("hub_notifications"), 0)
+        assert result["status"] == "failed"
+        assert "private details" not in str(self.hub.snapshot())
+        assert self.count("hub_notifications") == 0
         self.hub.close()
         self.hub = self.new_hub()
         recovered = self.hub.retry()
-        self.assertEqual(recovered[0]["status"], "complete", recovered)
-        self.assertEqual(self.count("hub_notifications"), 1)
-        self.assertEqual(self.hub.retry(), [])
+        assert recovered[0]["status"] == "complete", recovered
+        assert self.count("hub_notifications") == 1
+        assert self.hub.retry() == []
 
     def test_partial_manifest_failure_resumes_identical_ingest(self):
         original = ObjectStore.put_bytes
@@ -190,9 +186,9 @@ class HubTests(unittest.TestCase):
             return original(store, key, data, **kwargs)
 
         with patch.object(ObjectStore, "put_bytes", fail):
-            self.assertEqual(self.send(self.event())["status"], "failed")
-        self.assertEqual(self.count("hub_notifications"), 0)
-        self.assertEqual(self.hub.retry()[0]["status"], "complete")
+            assert self.send(self.event())["status"] == "failed"
+        assert self.count("hub_notifications") == 0
+        assert self.hub.retry()[0]["status"] == "complete"
 
     def test_action_failure_rolls_back_cooldown_and_notifications(self):
         original = self.hub.evaluate
@@ -202,20 +198,20 @@ class HubTests(unittest.TestCase):
             raise RuntimeError("synthetic")
 
         with patch.object(self.hub, "evaluate", fail):
-            self.assertEqual(self.send(self.event())["status"], "failed")
+            assert self.send(self.event())["status"] == "failed"
         for table in ["hub_notifications", "hub_decisions", "hub_rule_state"]:
-            self.assertEqual(self.count(table), 0)
-        self.assertEqual(self.hub.retry()[0]["notifications"], 1)
+            assert self.count(table) == 0
+        assert self.hub.retry()[0]["notifications"] == 1
 
     def test_rule_snapshot_stable_on_retry_and_disable_stops_actions(self):
         with patch.object(e, "ingest_payload", side_effect=StorageError()):
             self.send(self.event())
         self.change(lambda c: c["rules"][0].update(threshold=100))
-        self.assertEqual(self.hub.retry()[0]["notifications"], 1)
+        assert self.hub.retry()[0]["notifications"] == 1
         with patch.object(e, "ingest_payload", side_effect=StorageError()):
             self.send(self.event(event_id="next", source="app-demo"))
         self.change(lambda c: c["rules"][0].update(enabled=False))
-        self.assertEqual(self.hub.retry()[0]["notifications"], 0)
+        assert self.hub.retry()[0]["notifications"] == 0
 
     def test_tampered_bronze_never_projects(self):
         with patch.object(self.hub, "evaluate", side_effect=RuntimeError()):
@@ -224,34 +220,34 @@ class HubTests(unittest.TestCase):
             self.hub.intake_store, "hub-" + result["identity"]
         )
         Path(self.hub.lake_uri, row["lake_bronze_object_key"]).write_bytes(b"corrupt")
-        self.assertEqual(self.hub.retry()[0]["status"], "failed")
-        self.assertEqual(self.count("hub_notifications"), 0)
+        assert self.hub.retry()[0]["status"] == "failed"
+        assert self.count("hub_notifications") == 0
 
     def test_independent_http_source_has_own_cooldown(self):
         self.send(self.event())
-        self.assertEqual(self.send(self.event(source="app-demo"))["notifications"], 1)
+        assert self.send(self.event(source="app-demo"))["notifications"] == 1
 
     def test_single_runtime_writer(self):
-        with self.assertRaisesRegex(RuntimeError, "hub_already_running"):
+        with pytest.raises(RuntimeError, match="hub_already_running"):
             self.new_hub()
 
     def test_automatic_retry_is_bounded_and_manual_retry_recovers(self):
         with patch.object(e, "ingest_payload", side_effect=StorageError()):
             self.send(self.event())
-            self.assertEqual(self.hub.retry(automatic=True), [])
+            assert self.hub.retry(automatic=True) == []
             for _ in range(4):
                 self.hub.retry()
-        self.assertEqual(self.hub.retry(automatic=True), [])
+        assert self.hub.retry(automatic=True) == []
         exhausted = self.send(self.event())
-        self.assertTrue(exhausted["retry_exhausted"])
-        self.assertEqual(self.hub.retry()[0]["status"], "complete")
-        self.assertEqual(self.count("hub_notifications"), 1)
+        assert exhausted["retry_exhausted"]
+        assert self.hub.retry()[0]["status"] == "complete"
+        assert self.count("hub_notifications") == 1
 
     def test_history_reads_measurement_from_bronze(self):
         self.send(self.event(value=38.5))
         history = self.hub.snapshot()["events"][0]
-        self.assertEqual(history["value"], 38.5)
-        self.assertEqual(history["unit"], "celsius")
+        assert history["value"] == 38.5
+        assert history["unit"] == "celsius"
 
     def test_onboard_creates_scoped_profile_and_acl_without_printing_secret(self):
         with patch.object(
@@ -267,22 +263,22 @@ class HubTests(unittest.TestCase):
                 "192.168.1.20",
                 1884,
             )
-        self.assertEqual(result["status"], "created")
-        self.assertNotIn("password", result)
+        assert result["status"] == "created"
+        assert "password" not in result
         profile_path = Path(result["profile_path"])
-        self.assertEqual(profile_path.stat().st_mode & 0o077, 0)
+        assert profile_path.stat().st_mode & 63 == 0
         profile = json.loads(profile_path.read_text())
-        self.assertEqual(profile["source_id"], "living-room")
-        self.assertEqual(profile["host"], "192.168.1.20")
-        self.assertNotEqual(profile["password"], "")
+        assert profile["source_id"] == "living-room"
+        assert profile["host"] == "192.168.1.20"
+        assert profile["password"] != ""
         acl = (self.runtime / "auth/acl").read_text()
-        self.assertIn("user living-room", acl)
-        self.assertIn("topic write se/events/living-room", acl)
-        self.assertNotIn(
-            "topic write se/events/app-demo", acl.split("user living-room", 1)[-1]
+        assert "user living-room" in acl
+        assert "topic write se/events/living-room" in acl
+        assert (
+            "topic write se/events/app-demo" not in acl.split("user living-room", 1)[-1]
         )
         cfg = e.load_config(self.runtime / "config.json")
-        self.assertEqual(cfg["sources"]["living-room"]["transport"], "mqtt")
+        assert cfg["sources"]["living-room"]["transport"] == "mqtt"
 
     def test_onboard_rejects_duplicate_and_invalid_network_identity(self):
         with patch.object(
@@ -298,7 +294,7 @@ class HubTests(unittest.TestCase):
                 "192.168.1.20",
                 1884,
             )
-            with self.assertRaisesRegex(e.Rejected, "source_exists"):
+            with pytest.raises(e.Rejected, match="source_exists"):
                 transport.onboard(
                     self.runtime,
                     self.config,
@@ -307,7 +303,7 @@ class HubTests(unittest.TestCase):
                     "192.168.1.20",
                     1884,
                 )
-            with self.assertRaisesRegex(e.Rejected, "invalid_device_host"):
+            with pytest.raises(e.Rejected, match="invalid_device_host"):
                 transport.onboard(
                     self.runtime,
                     self.config,
@@ -316,7 +312,7 @@ class HubTests(unittest.TestCase):
                     "user:pass@host",
                     1884,
                 )
-            with self.assertRaisesRegex(e.Rejected, "invalid_device_port"):
+            with pytest.raises(e.Rejected, match="invalid_device_port"):
                 transport.onboard(
                     self.runtime,
                     self.config,
@@ -349,10 +345,10 @@ class HubTests(unittest.TestCase):
                 1884,
             )
         acl = (self.runtime / "auth/acl").read_text()
-        self.assertEqual(acl.count("user event-hub"), 1)
-        self.assertEqual(acl.count("topic write"), 3)
-        self.assertIn("topic write se/events/first-device", acl)
-        self.assertIn("topic write se/events/second-device", acl)
+        assert acl.count("user event-hub") == 1
+        assert acl.count("topic write") == 3
+        assert "topic write se/events/first-device" in acl
+        assert "topic write se/events/second-device" in acl
 
     def test_http_auth_origin_validation_and_config(self):
         values = {"operator": "fixture-operator", "http": {"app-demo": "fixture-app"}}
@@ -379,36 +375,32 @@ class HubTests(unittest.TestCase):
                     return exc.code, json.load(exc)
 
         try:
-            self.assertEqual(request("/api/status")[0], 401)
-            self.assertEqual(request("/api/status", "fixture-app")[0], 401)
-            self.assertEqual(request("/api/status", "fixture-operator")[0], 200)
+            assert request("/api/status")[0] == 401
+            assert request("/api/status", "fixture-app")[0] == 401
+            assert request("/api/status", "fixture-operator")[0] == 200
             raw = e.canonical_json(self.event(source="app-demo")).encode()
-            self.assertEqual(
-                request("/api/events/app-demo", "fixture-operator", raw)[0], 401
-            )
-            self.assertEqual(
+            assert request("/api/events/app-demo", "fixture-operator", raw)[0] == 401
+            assert (
                 request(
                     "/api/events/app-demo", "fixture-app", raw, "https://other.invalid"
-                )[0],
-                403,
+                )[0]
+                == 403
             )
-            self.assertEqual(
-                request("/api/events/app-demo", "fixture-app", raw)[1]["status"],
-                "complete",
+            assert (
+                request("/api/events/app-demo", "fixture-app", raw)[1]["status"]
+                == "complete"
             )
-            self.assertEqual(
-                request("/api/events/app-demo", "fixture-app", b" " * 4097)[0], 400
-            )
-            self.assertEqual(request("/api/config", "fixture-operator", b"{}")[0], 400)
+            assert request("/api/events/app-demo", "fixture-app", b" " * 4097)[0] == 400
+            assert request("/api/config", "fixture-operator", b"{}")[0] == 400
             cfg = json.loads(self.config.read_text())
             cfg["rules"][0]["threshold"] = 40
-            self.assertEqual(
+            assert (
                 request(
                     "/api/config", "fixture-operator", e.canonical_json(cfg).encode()
-                )[0],
-                200,
+                )[0]
+                == 200
             )
-            self.assertEqual(e.load_config(self.config)["rules"][0]["threshold"], 40)
+            assert e.load_config(self.config)["rules"][0]["threshold"] == 40
         finally:
             server.shutdown()
             thread.join()
@@ -439,7 +431,7 @@ class HubTests(unittest.TestCase):
         message.payload = b"invalid"
         worker.on_message(client, None, message)
         client.ack.assert_called_once_with(42, 1)
-        self.assertEqual(self.count("hub_rejections"), 1)
+        assert self.count("hub_rejections") == 1
 
 
 if __name__ == "__main__":

@@ -1,11 +1,17 @@
-# Ruff defaults, adjusted for this repository (DevSecOps Phase 1). Most of the code here is
-# vendored from solo-empire and should be cleaned up there, not in this copy.
+# Shared Python lint rules (as in the other Solo Empire services), adjusted for this repository.
+# Most of the code here is vendored from solo-empire and should be cleaned up there, not in this copy.
+target-version = "py311"
+
 [lint]
+select = [
+    "E", "W", "F", "I", "B", "BLE", "UP", "C4", "SIM", "RUF", "PIE", "PT", "RET", "ISC",
+    "PERF", "LOG", "G", "FURB",
+]
+# - E501: ruff format wraps code at 88; what stays longer are nosemgrep/noqa justifications,
+#   which must sit on the flagged line.
 # - I001: import order is load-bearing (sys.path setup, and test doubles that patch the stores
 #   when imported), so imports are not re-sorted.
 # - RUF100: the existing `# noqa: E402 (...)` comments explain each late import; keep them.
 # Lint debt that needs a behaviour review before it can be fixed (re-enable one by one):
 # - BLE001: deliberate broad excepts that turn store/transport failures into reported errors.
-# - TRY004: ValueError -> TypeError would change the exception type callers and tests rely on.
-# - S110: best-effort cleanup that swallows errors on purpose.
-extend-ignore = ["I001", "RUF100", "BLE001", "TRY004", "S110"]
+ignore = ["E501", "I001", "RUF100", "BLE001"]

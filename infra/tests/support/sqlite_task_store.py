@@ -51,7 +51,7 @@ class SqliteTaskStore:
         names = [d[0] for d in cursor.description]
         records = []
         for row in cursor.fetchall():
-            values = dict(zip(names, row))
+            values = dict(zip(names, row, strict=False))
             records.append(
                 _record(
                     {
@@ -181,7 +181,7 @@ class SqliteTaskStore:
             )
             names = [d[0] for d in cursor.description]
             for row in cursor.fetchall():
-                values = dict(zip(names, row))
+                values = dict(zip(names, row, strict=False))
                 attributes = {
                     k: values[k] for k in LINK_ATTRIBUTES[kind] if k in values
                 }
@@ -425,7 +425,7 @@ class SqliteTaskStore:
         names = [d[0] for d in cursor.description]
         types = []
         for row in cursor.fetchall():
-            values = dict(zip(names, row))
+            values = dict(zip(names, row, strict=False))
             types.append(
                 {
                     "id": values["id"],
@@ -556,7 +556,7 @@ class SqliteTaskStore:
         names = [
             d[0] for d in self.conn.execute("SELECT * FROM tasks LIMIT 0").description
         ]
-        parent = dict(zip(names, parent))
+        parent = dict(zip(names, parent, strict=False))
         existing = self.conn.execute(
             "SELECT recurrence_occurrence, due_date, completed_at FROM tasks WHERE parent_recurring_id = ?"
             " ORDER BY recurrence_occurrence",

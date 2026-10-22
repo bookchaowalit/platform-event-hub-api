@@ -16,6 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+import contextlib
 
 
 class StorageError(RuntimeError):
@@ -198,13 +199,13 @@ class ObjectStore:
             except FileExistsError:
                 existing = hashlib.sha256(destination.read_bytes()).hexdigest()
                 if existing != digest:
-                    raise StorageConflict(f"Immutable object conflict at {key}")
+                    raise StorageConflict(
+                        f"Immutable object conflict at {key}"
+                    ) from None
                 return PutResult(key=key, existed=True, sha256=digest)
             finally:
-                try:
+                with contextlib.suppress(FileNotFoundError):
                     temporary.unlink()
-                except FileNotFoundError:
-                    pass
             return PutResult(key=key, existed=False, sha256=digest)
 
         assert self.bucket is not None
@@ -267,7 +268,7 @@ class ObjectStore:
             except ObjectNotFound:
                 # A provider can report a transiently stale HEAD.  Fail closed
                 # instead of overwriting an object whose state is uncertain.
-                raise StorageError(f"Object disappeared while checking {key}")
+                raise StorageError(f"Object disappeared while checking {key}") from None
             if existing_digest != digest:
                 raise StorageConflict(f"Immutable object conflict at {key}")
             return PutResult(key=key, existed=True, sha256=digest)
@@ -309,10 +310,8 @@ class ObjectStore:
         try:
             uploaded = self._run_aws(command)
         finally:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 temporary.unlink()
-            except FileNotFoundError:
-                pass
         if uploaded.returncode != 0:
             error = uploaded.stderr.decode("utf-8", errors="replace").lower()
             if any(

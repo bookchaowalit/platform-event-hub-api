@@ -614,8 +614,7 @@ def probe_secrets(names: tuple[str, ...] | list[str] | None = None) -> dict[str,
     elif any(s == STATUS_PROVIDER_UNREACHABLE for s in statuses):
         overall = STATUS_PROVIDER_UNREACHABLE
     elif (
-        mode not in {"env", "auto"}
-        and not configured
+        (mode not in {"env", "auto"} and not configured)
         or (
             mode == "auto"
             and isinstance(provider, EnvProvider)

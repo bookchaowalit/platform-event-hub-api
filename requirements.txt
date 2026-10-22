@@ -1,2 +1,7 @@
-# Test/dev dependencies (the container image uses infra/event-hub/requirements.txt)
+# Test/dev dependencies (the container image uses infra/event-hub/requirements.txt).
+# Install from the hash-pinned lock: uv pip install --require-hashes -r requirements.lock
+# Regenerate both locks after editing either file (see README).
 -r infra/event-hub/requirements.txt
+pytest>=8
+pytest-cov>=7
+mypy>=2.4
