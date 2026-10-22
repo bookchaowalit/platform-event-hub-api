@@ -21,7 +21,7 @@ Repo นี้คงโครงสร้างแบบ `infra/` เดิม�
 ติดตั้ง dependency จาก lock ที่ pin hash ไว้ (pyarrow จำเป็น: event hub อ่าน/เขียน Parquet bronze; paho-mqtt ใช้เฉพาะ transport จริง):
 
 ```bash
-uv venv -p 3.11 && uv pip install --require-hashes -r requirements.lock
+uv sync --frozen --all-extras -p 3.11                          # จาก uv.lock (เหมือน CI)
 uvx ruff@0.17.1 check . && uvx ruff@0.17.1 format --check .
 .venv/bin/mypy .                                              # strict กับ infra/scripts/services/
 .venv/bin/python -m pytest -q --cov                           # tests/ + event_hub_test.py; CI gate coverage
@@ -32,14 +32,14 @@ Live test ต้องรัน `infra/event-hub/compose.yml` เท่านั
 
 ## Dependencies และ lock
 
-- `infra/event-hub/requirements.txt` — runtime ของ image; image ติดตั้งจาก `infra/event-hub/requirements.lock` ด้วย `pip install --require-hashes`
-- `requirements.txt` — runtime + เครื่องมือทดสอบ (pytest, pytest-cov, mypy); CI ติดตั้งจาก `requirements.lock`
+- `pyproject.toml` ประกาศ dependency (runtime + extra `dev`) และ `uv.lock` pin ทุกตัว; CI ติดตั้งด้วย `uv sync --frozen --all-extras` และ OSV-Scanner อ่าน `uv.lock`
+- `infra/event-hub/requirements.lock` คือ runtime จาก `uv.lock` แบบ pin hash; image ติดตั้งด้วย `pip install --require-hashes`
 
-แก้ไฟล์ใดไฟล์หนึ่งแล้วสร้าง lock ใหม่ทั้งสองไฟล์ (คำสั่งอยู่บรรทัดแรกของแต่ละ lock):
+แก้ dependency แล้วสร้างทั้งสองไฟล์ใหม่:
 
 ```bash
-uv pip compile --generate-hashes --python-version 3.11 --python-platform x86_64-manylinux_2_28 infra/event-hub/requirements.txt -o infra/event-hub/requirements.lock
-uv pip compile --generate-hashes --python-version 3.11 --python-platform x86_64-manylinux_2_28 requirements.txt -o requirements.lock
+uv lock -p 3.11
+uv export --frozen --no-dev --no-emit-project --format requirements-txt -o infra/event-hub/requirements.lock
 ```
 
 ## Sentry

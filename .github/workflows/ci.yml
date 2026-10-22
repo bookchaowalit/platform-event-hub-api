@@ -19,8 +19,7 @@ jobs:
     uses: bookchaowalit/platform-ci-workflows/.github/workflows/ci-python.yml@87dc5e1c7e0416886a6371d5a101bb2ccba38edd # v1.1.1
     with:
       python-version: "3.11" # matches the python:3.11-slim image (infra/event-hub/Dockerfile)
-      # Dev/test dependencies from the hash-pinned lock (no pyproject project, so not uv sync).
-      install-command: uv pip install --require-hashes -r requirements.lock
+      # Dependencies: uv.lock (auto install = uv sync --frozen --all-extras).
       # pytest runs tests/ and event_hub_test.py under coverage (pyproject testpaths) and leaves
       # .coverage for the gate; data_intake_test.py is a standalone script (its CLI runs in
       # subprocesses). event_hub_live_test.py needs the compose stack and stays manual.
