@@ -186,3 +186,10 @@ Big Loop Plan Wave 2 (solo-empire `repository-catalog/roadmaps/BIG-LOOP-PLAN-202
 |---|---|---|---|---|
 | Implemented (DoD) | Reviewer (checker) | Fresh Claude reviewer / 2026-10-22 | see Wave 2 report | CI run of the pushed tip |
 | Implemented (DoD) | Approver | Owner | pending | Wave 2 report |
+
+## Review (2026-10-24): changes requested
+
+Checker: independent Claude reviewer subagent (`solo:solo-reviewer`, Sonnet, read-only, no maker context). Status unchanged until fixed.
+
+- Tests run by the checker: .venv/bin/pytest -q: 96 passed, 9 subtests passed
+- Gap: §4 Interfaces table is corrupted (single-letter rows). AC-01 cites the import test, but the --help check is a separate test. Regenerate §4 and fix the citation.
