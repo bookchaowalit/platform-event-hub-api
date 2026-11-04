@@ -20,7 +20,7 @@ flowchart LR
 | Dependency | Kind | Required for | Failure effect |
 |---|---|---|---|
 | Mosquitto | runtime service | MQTT ingest | `/health` 503 (worker not ready); HTTP ingest still works |
-| Intake cell API | hosted API | every `receive` / `process` (`sync_sources`, enqueue … verify), startup | receipt `failed` with error class (e.g. `CellStoreError`), retried; startup fails without config |
+| Intake cell API | hosted API | every `receive` / `process` (`sync_sources`, enqueue … verify), startup | inside `process()`: receipt `failed` with error class (e.g. `CellStoreError`), retried; during `receive()` initial `sync_sources()`: 503 `processing_unavailable` before any receipt is stored, no retry, producer must resend; startup fails without config |
 | Local filesystem | storage | lake, hub.db, secrets | failure code, no action (lake-first) |
 | Sentry | SaaS | error reporting | none (opt-in) |
 | Docker CLI | host tool | `setup`, `onboard` password hashing | `mqtt_password_setup_failed` |
